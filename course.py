@@ -1,6 +1,6 @@
 import heapq  # Для реализации очереди с приоритетом (мин-кучи)
 from collections import Counter  # Для подсчета частот символов
-import pickle  # Для сериализации метаданных (частот)
+import pickle  # Для сериализации метаданных (частот и bit_length)
 import sys  # Для аргументов командной строки
 
 
@@ -83,16 +83,18 @@ def generate_codes(root, current_code="", codes=None):
     return codes
 
 
-# Функция для преобразования строки битов в байты
+# Функция для преобразования строки битов в байты (с trailing padding)
 def bitstring_to_bytes(bitstring):
     """
-    Преобразование строки битов ('0101...') в байты.
+    Преобразование строки битов ('0101...') в байты с дополнением trailing zeros.
     - bitstring: строка битов.
     Возвращает: bytes объект.
     """
     byte_array = bytearray()
     for i in range(0, len(bitstring), 8):
         byte_str = bitstring[i:i + 8]
+        if len(byte_str) < 8:
+            byte_str = byte_str.ljust(8, '0')  # Дополняем trailing zeros
         byte_array.append(int(byte_str, 2))
     return bytes(byte_array)
 
@@ -129,11 +131,12 @@ def compress_to_file(input_file, output_file):
 
     # Сжатие
     compressed_bitstring = ''.join(codes[char] for char in data)
+    bit_length = len(compressed_bitstring)  # Сохраняем точную длину бит
     compressed_bytes = bitstring_to_bytes(compressed_bitstring)
 
-    # Запись в файл: сначала pickled frequencies, затем сжатые байты
+    # Запись в файл: pickled (frequencies, bit_length), затем сжатые байты
     with open(output_file, 'wb') as f:
-        pickle.dump(frequencies, f)
+        pickle.dump((frequencies, bit_length), f)
         f.write(compressed_bytes)
 
     print(f"Compressed {input_file} to {output_file}")
@@ -147,8 +150,8 @@ def decompress_from_file(input_file, output_file):
     - output_file: путь к выходному декомпрессированному файлу.
     """
     with open(input_file, 'rb') as f:
-        # Чтение pickled frequencies
-        frequencies = pickle.load(f)
+        # Чтение pickled (frequencies, bit_length)
+        frequencies, bit_length = pickle.load(f)
         # Чтение остатка как сжатых байтов
         compressed_bytes = f.read()
 
@@ -159,8 +162,8 @@ def decompress_from_file(input_file, output_file):
     # Восстановление дерева
     root = build_huffman_tree(frequencies)
 
-    # Преобразование байтов в биты
-    compressed_bitstring = bytes_to_bitstring(compressed_bytes)
+    # Преобразование байтов в биты и обрезка до оригинальной длины
+    compressed_bitstring = bytes_to_bitstring(compressed_bytes)[:bit_length]
 
     # Декомпрессия
     decompressed = []
@@ -198,7 +201,7 @@ def main():
     # Декомпрессия
     decompress_from_file(compressed_file, decompressed_file)
 
-    # Проверка (опционально: сравнить input и decompressed)
+    # Проверка
     with open(input_file, 'r', encoding='utf-8') as f_in, open(decompressed_file, 'r', encoding='utf-8') as f_out:
         if f_in.read() == f_out.read():
             print("Decompression successful!")

@@ -1,214 +1,293 @@
-import heapq  # Для реализации очереди с приоритетом (мин-кучи)
-from collections import Counter  # Для подсчета частот символов
-import pickle  # Для сериализации метаданных (частот и bit_length)
-import sys  # Для аргументов командной строки
+import heapq
+from collections import Counter, deque
+import pickle
+import sys
+import os
 
+# ====================== Классы и утилиты ======================
 
-# Класс для узла дерева Хаффмана
 class Node:
     def __init__(self, char=None, freq=0, left=None, right=None):
-        """
-        Инициализация узла.
-        - char: символ (для листовых узлов), None для внутренних.
-        - freq: частота (вес) узла.
-        - left, right: левые и правые потомки.
-        """
+        # char хранится как int (0..255) для байтов, None для внутренних узлов
         self.char = char
         self.freq = freq
         self.left = left
         self.right = right
 
     def __lt__(self, other):
-        """
-        Перегрузка оператора < для сравнения узлов по частоте (для heapq).
-        """
+        # сравнение по частоте для heapq
         return self.freq < other.freq
 
-
-# Функция для подсчета частот
-def calculate_frequencies(data):
-    """
-    Подсчет частоты каждого символа в входных данных.
-    - data: строка или последовательность символов.
-    Возвращает: словарь Counter с частотами.
-    """
-    return Counter(data)
-
-
-# Функция построения дерева Хаффмана
 def build_huffman_tree(frequencies):
-    """
-    Построение дерева Хаффмана на основе частот.
-    - frequencies: словарь с частотами символов.
-    Возвращает: корень дерева (Node) или None, если данных нет.
-    """
+    """Построение дерева Хаффмана по текущим частотам (frequencies: Counter[int])"""
     if not frequencies:
         return None
-    # Создаем мин-кучу из листовых узлов
-    heap = [Node(char, freq) for char, freq in frequencies.items()]
+    heap = [Node(char, freq) for char, freq in frequencies.items() if freq > 0]
+    if not heap:
+        return None
     heapq.heapify(heap)
-    # Пока в куче больше одного узла
+
     while len(heap) > 1:
-        # Извлекаем два узла с минимальными частотами
         left = heapq.heappop(heap)
         right = heapq.heappop(heap)
-        # Создаем родительский узел
         parent = Node(None, left.freq + right.freq, left, right)
-        # Добавляем обратно в кучу
         heapq.heappush(heap, parent)
-    # Оставшийся узел — корень дерева
+
     return heap[0]
 
-
-# Функция генерации кодов по дереву
 def generate_codes(root, current_code="", codes=None):
-    """
-    Рекурсивная генерация кодов путем обхода дерева.
-    - root: корень дерева.
-    - current_code: текущий префикс кода (строка битов).
-    - codes: словарь для хранения кодов (символ: код).
-    Возвращает: словарь с кодами.
-    """
+    """Генерация кодов из дерева. Возвращает dict: int -> str (битовая строка)"""
     if codes is None:
         codes = {}
     if root is None:
         return codes
-    # Если лист — присваиваем код символу
     if root.char is not None:
-        codes[root.char] = current_code
+        # Если дерево состоит из одного листа, current_code может быть пустым — назначаем ненулевой код
+        codes[root.char] = current_code if current_code != "" else "0"
         return codes
-    # Рекурсия для левого (0) и правого (1) потомков
     generate_codes(root.left, current_code + "0", codes)
     generate_codes(root.right, current_code + "1", codes)
     return codes
 
+class BitWriter:
+    """Буфер для записи битов и получения байтов"""
+    def __init__(self):
+        self.bytes = bytearray()
+        self.current = 0
+        self.nbits = 0  # сколько битов записано в current (0..7)
+        self.total_bits = 0
 
-# Функция для преобразования строки битов в байты (с trailing padding)
-def bitstring_to_bytes(bitstring):
-    """
-    Преобразование строки битов ('0101...') в байты с дополнением trailing zeros.
-    - bitstring: строка битов.
-    Возвращает: bytes объект.
-    """
-    byte_array = bytearray()
-    for i in range(0, len(bitstring), 8):
-        byte_str = bitstring[i:i + 8]
-        if len(byte_str) < 8:
-            byte_str = byte_str.ljust(8, '0')  # Дополняем trailing zeros
-        byte_array.append(int(byte_str, 2))
-    return bytes(byte_array)
+    def write_bits(self, bits: str):
+        for b in bits:
+            self.current = (self.current << 1) | (1 if b == '1' else 0)
+            self.nbits += 1
+            self.total_bits += 1
+            if self.nbits == 8:
+                self.bytes.append(self.current)
+                self.current = 0
+                self.nbits = 0
 
+    def flush(self):
+        if self.nbits > 0:
+            # дополняем справа нулями до 8 бит
+            self.current <<= (8 - self.nbits)
+            self.bytes.append(self.current)
+            self.current = 0
+            self.nbits = 0
 
-# Функция для преобразования байтов в строку битов
-def bytes_to_bitstring(byte_data):
-    """
-    Преобразование байтов в строку битов.
-    - byte_data: bytes объект.
-    Возвращает: строку битов.
-    """
-    return ''.join(f'{byte:08b}' for byte in byte_data)
+    def get_bytes(self):
+        return bytes(self.bytes)
 
+class BitReader:
+    """Чтение битов из байтовой строки с ограничением по длине битов"""
+    def __init__(self, data: bytes, bit_length: int):
+        self.data = data
+        self.bit_length = bit_length
+        self.pos = 0  # позиция в битах
 
-# Функция сжатия (компрессии) в файл
-def compress_to_file(input_file, output_file):
-    """
-    Сжатие данных из входного файла и запись в выходной бинарный файл.
-    - input_file: путь к входному текстовому файлу.
-    - output_file: путь к выходному сжатому файлу.
-    """
-    # Чтение данных
-    with open(input_file, 'r', encoding='utf-8') as f:
+    def read_bit(self):
+        if self.pos >= self.bit_length:
+            return None
+        byte_index = self.pos // 8
+        bit_index = 7 - (self.pos % 8)  # читаем старший бит первым
+        b = (self.data[byte_index] >> bit_index) & 1
+        self.pos += 1
+        return '1' if b else '0'
+
+    def read_bits(self, n):
+        bits = []
+        for _ in range(n):
+            bit = self.read_bit()
+            if bit is None:
+                return None
+            bits.append(bit)
+        return ''.join(bits)
+
+# ====================== Компрессия ======================
+
+def compress_to_file(input_file, output_file, window_size=1024):
+    # читаем как байты
+    with open(input_file, 'rb') as f:
         data = f.read()
 
     if not data:
         print("Input file is empty.")
+        # всё равно создаём пустой файл с заголовком
+        with open(output_file, 'wb') as f_out:
+            pickle.dump((window_size, 0), f_out)
         return
 
-    # Подсчет частот и построение дерева
-    frequencies = calculate_frequencies(data)
-    root = build_huffman_tree(frequencies)
-    codes = generate_codes(root)
+    window = deque(maxlen=window_size)  # хранит int (0..255)
+    freq = Counter()
+    writer = BitWriter()
 
-    # Сжатие
-    compressed_bitstring = ''.join(codes[char] for char in data)
-    bit_length = len(compressed_bitstring)  # Сохраняем точную длину бит
-    compressed_bytes = bitstring_to_bytes(compressed_bitstring)
+    root = None
+    codes = {}
 
-    # Запись в файл: pickled (frequencies, bit_length), затем сжатые байты
+    # Проходим по каждому байту (int)
+    for b in data:
+        # Кодирование: префикс + либо 8 бит нового байта, либо код Хаффмана
+        if root is not None and b in codes:
+            # префикс '1' означает: далее код Хаффмана
+            writer.write_bits('1')
+            writer.write_bits(codes[b])
+        else:
+            # префикс '0' означает: далее 8 бит "сырых" данных (новый байт)
+            writer.write_bits('0')
+            writer.write_bits(f'{b:08b}')
+
+        # Обновление окна и частот
+        if len(window) == window_size:
+            old = window.popleft()
+            freq[old] -= 1
+            if freq[old] == 0:
+                del freq[old]
+
+        window.append(b)
+        freq[b] += 1
+
+        # Перестроение дерева и кодов
+        if freq:
+            root = build_huffman_tree(freq)
+            if root:
+                codes = generate_codes(root)
+        else:
+            root = None
+            codes = {}
+
+    # Завершаем запись битов
+    writer.flush()
+    compressed_bytes = writer.get_bytes()
+    bit_length = writer.total_bits
+
+    # Сохраняем заголовок и данные
     with open(output_file, 'wb') as f:
-        pickle.dump((frequencies, bit_length), f)
+        pickle.dump((window_size, bit_length), f)
         f.write(compressed_bytes)
 
-    print(f"Compressed {input_file} to {output_file}")
+    ratio = len(compressed_bytes) / len(data) if len(data) > 0 else 0
+    print(f"Compressed {input_file} → {output_file} (window={window_size}, ratio ≈ {ratio:.3f})")
 
+# ====================== Декомпрессия ======================
 
-# Функция распаковки (декомпрессии) из файла
 def decompress_from_file(input_file, output_file):
-    """
-    Декомпрессия из сжатого файла и запись в выходной текстовый файл.
-    - input_file: путь к сжатому файлу.
-    - output_file: путь к выходному декомпрессированному файлу.
-    """
     with open(input_file, 'rb') as f:
-        # Чтение pickled (frequencies, bit_length)
-        frequencies, bit_length = pickle.load(f)
-        # Чтение остатка как сжатых байтов
+        window_size, bit_length = pickle.load(f)
         compressed_bytes = f.read()
 
-    if not frequencies:
-        print("No data to decompress.")
-        return
+    reader = BitReader(compressed_bytes, bit_length)
 
-    # Восстановление дерева
-    root = build_huffman_tree(frequencies)
+    window = deque(maxlen=window_size)
+    freq = Counter()
+    decompressed = bytearray()
+    root = None
 
-    # Преобразование байтов в биты и обрезка до оригинальной длины
-    compressed_bitstring = bytes_to_bitstring(compressed_bytes)[:bit_length]
+    while True:
+        flag = reader.read_bit()
+        if flag is None:
+            break  # конец потока
+        if flag == '0':
+            # новый байт: читаем 8 бит
+            bits = reader.read_bits(8)
+            if bits is None:
+                raise ValueError("Unexpected end of bitstream while reading raw byte")
+            b = int(bits, 2)
+            decompressed.append(b)
 
-    # Декомпрессия
-    decompressed = []
-    current = root
-    for bit in compressed_bitstring:
-        if bit == '0':
-            current = current.left
-        else:
-            current = current.right
-        if current.char is not None:
-            decompressed.append(current.char)
-            current = root
+            # обновляем окно/частоты
+            if len(window) == window_size:
+                old = window.popleft()
+                freq[old] -= 1
+                if freq[old] == 0:
+                    del freq[old]
+            window.append(b)
+            freq[b] += 1
 
-    # Запись в файл
-    with open(output_file, 'w', encoding='utf-8') as f:
-        f.write(''.join(decompressed))
+            # перестроение дерева
+            root = build_huffman_tree(freq) if freq else None
+            continue
 
-    print(f"Decompressed {input_file} to {output_file}")
+        # flag == '1' => код Хаффмана
+        if root is None:
+            raise ValueError("Huffman tree missing for coded symbol")
 
+        # Если дерево состоит из одного листа, берем его сразу
+        if root.char is not None:
+            b = root.char
+            decompressed.append(b)
+            if len(window) == window_size:
+                old = window.popleft()
+                freq[old] -= 1
+                if freq[old] == 0:
+                    del freq[old]
+            window.append(b)
+            freq[b] += 1
+            root = build_huffman_tree(freq) if freq else None
+            continue
 
-# Пример использования (функция main)
+        # Иначе спускаемся по дереву, читая биты
+        current = root
+        while current.char is None:
+            bit = reader.read_bit()
+            if bit is None:
+                raise ValueError("Unexpected end of bitstream while reading Huffman code")
+            current = current.left if bit == '0' else current.right
+            if current is None:
+                raise ValueError("Invalid Huffman code encountered during decoding")
+
+        b = current.char
+        decompressed.append(b)
+
+        # обновляем окно/частоты
+        if len(window) == window_size:
+            old = window.popleft()
+            freq[old] -= 1
+            if freq[old] == 0:
+                del freq[old]
+        window.append(b)
+        freq[b] += 1
+
+        # перестроение дерева
+        root = build_huffman_tree(freq) if freq else None
+
+    # Записываем восстановленные байты
+    with open(output_file, 'wb') as f:
+        f.write(decompressed)
+
+    print(f"Decompressed {input_file} → {output_file}")
+
+# ====================== main ======================
+
 def main():
-    """
-    Пример работы алгоритма с файлами.
-    Принимает аргумент: python script.py [input_file]
-    По умолчанию: input.txt
-    """
-    input_file = sys.argv[1] if len(sys.argv) > 1 else "input.txt"
-    compressed_file = "compressed.huff"
-    decompressed_file = "decompressed.txt"
+    if len(sys.argv) < 2:
+        print("Usage: python huffman_adaptive.py <input_file> [window_size]")
+        sys.exit(1)
 
-    # Сжатие
-    compress_to_file(input_file, compressed_file)
+    input_file = sys.argv[1]
+    window_size = int(sys.argv[2]) if len(sys.argv) > 2 else 1024
 
-    # Декомпрессия
+    compressed_file = "compressed_adaptive.huff"
+    decompressed_file = "decompressed.bin"
+
+    compress_to_file(input_file, compressed_file, window_size)
     decompress_from_file(compressed_file, decompressed_file)
 
-    # Проверка
-    with open(input_file, 'r', encoding='utf-8') as f_in, open(decompressed_file, 'r', encoding='utf-8') as f_out:
-        if f_in.read() == f_out.read():
-            print("Decompression successful!")
+    # Проверка: сравниваем байты
+    with open(input_file, 'rb') as f_in, open(decompressed_file, 'rb') as f_out:
+        original = f_in.read()
+        restored = f_out.read()
+        if original == restored:
+            print("✓ Decompression successful!")
         else:
-            print("Decompression failed!")
+            print("✗ Decompression failed!")
+            # для отладки можно вывести первые несовпадающие позиции
+            min_len = min(len(original), len(restored))
+            for i in range(min_len):
+                if original[i] != restored[i]:
+                    print(f"First mismatch at byte {i}: original={original[i]} restored={restored[i]}")
+                    break
+            if len(original) != len(restored):
+                print(f"Lengths differ: original={len(original)} restored={len(restored)}")
 
-
-# Запуск примера
 if __name__ == "__main__":
     main()

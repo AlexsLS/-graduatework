@@ -283,13 +283,13 @@ def decompress_fgk(input_file, output_file):
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: python fgk_huffman.py <input_file>")
+        print("Usage: python 1.py <input_file>")
         sys.exit(1)
 
     input_file = sys.argv[1]
 
-    compressed_file = "compressed_fgk.huff"
-    decompressed_file = "decompressed_fgk.bin"
+    compressed_file = "compressed.huff"
+    decompressed_file = "decompressed.bin"
 
     print(f"Compressing {input_file} -> {compressed_file} ...")
     compress_fgk(input_file, compressed_file)
